@@ -1,0 +1,200 @@
+---
+title: "BIO8068 Data visualisation and management"
+author: "Roy Sanderson"
+subtitle: Handling messy eDNA or gene expression data in R
+output:
+  word_document: default
+  html_document: default
+---
+
+## 1. Introduction
+When analysing phylogenetics data, eDNA samples, or microarray data you are generally best using one of the standard tools provided, that you have already covered in your Phylogenetics module. There is also a specialist set of packages in R, called Bioconductor <https://www.bioconductor.org> although this contains thousands (literally!) of individual packages, many of which need to be linked together for an analysis pipeline. Good packages that might be of interest in Bioconductor include `phyloseq` <https://bioconductor.org/packages/release/bioc/html/phyloseq.html> which is designed for high-throughput microbiome data, but also integrates effectively with the `vegan` package for multivariate analysis that I covered with you on the data analysis module. Another good package is `ape` (Analysis of Phylogenetics and Evolution) <http://ape-package.ird.fr/> which also has a related text of the same name (Emmanuel Paradis, 2012, Springer).
+
+However, it is still useful to understand how some of these analyses can be undertaken using `tidyverse` packages. This exercise demonstrates the challenges of these types of data, using a dataset from Brauer et al (2008) Coordination of growth rate, cell cycle, stress response and metabolic activity in yeast <https://doi.org/10.1091/mbc.e07-08-0779>. The exercise shows how dplyr, tidyr and ggplot can be used to your advantage with gene expression data, and is adapted from an exercise by David Robinson of the <https://varianceexplained.org> website.
+
+## 2. Background
+In gene regulation, a cell can control which genes are transcribed from DNA to RNA, and hence 'expressed'. When a gene is expressed it might speed up or slow down growth, nutrient exchange, how the cell responds to stimuli etc. Gene expression microarrays allow us to measure how much of each gene is expressed under a particular condition, and hence what is its function. Brauer used microarrays to test the effect of starvation and growth rate on yeast, as it is easy to manipulate e.g. supplies of glucose (energy), leucine (essential amino acide) or ammonium (nitrogen). By restricting or 'starving' the availability of these you can find genes that:
+
+* raise or lower their activity in response to growth rate
+* respond differently when different nutrients are being limited
+
+### Getting started
+Download the Brauer 2008 file from Blackboard, create an R project, and store the file in a `data` sub-folder within the project folder.
+
+## 3. Tidy the data with dplyr and tidyr
+Import the data, view it and understand its size; it is tab-delimited so we'll use read_delim with `\t` to indicate tabs:
+
+```{r read and examine the data}
+# Read and examine the data
+library(readr)
+original_data <- read_delim("data/Brauer2008_DataSet1.tds", delim="\t")
+original_data
+dim(original_data)
+```
+
+It is a big dataset, with columns `G0.05` and `N0.3` indicating gene expression values. The `G0.05` indicates glucose was limiting nutrient, and the growth rate was 0.05. The higher the value in the column, the more the gene is expressed. Use the `View` command to explore the data more.  The experiment had 6 limiting nutrients, at 6 growth rates, giving 36 samples (i.e. 36 columns) of gene expression data.
+
+**Question** : what is messy about this data??
+
+* The column headings are values (G, N, P etc. and 0.05-0.3) rather than variable names
+* The `NAME` column contains a muddle of information, e.g. the first few entries:
+
+```{r first entry of NAME}
+# First entry of NAME
+original_data$NAME[1:3]
+```
+
+The NAME column contains:
+
+* **Gene name** e.g. SFB2, although not all genes have names
+* **Biological process** e.g. “proteolysis and peptidolysis”
+* **Molecular function** e.g. “metalloendopeptidase activity”
+* **Systematic ID** e.g. YNL049C. Unlike a gene name, every gene in this dataset has a systematic ID.3
+* **Another ID number** e.g. 1082129. I don’t know what this number means!
+
+The `NAME` column contains a muddle about systematic ID's, biological information etc. So we need to sort these problems out. Remember, do this in R, don't be tempted to try it in Excel.
+
+We can now use the `tidyr` function `separate` to split up this column; there are `||` bars between each entry, and as this is treated as a special character in R we'll need **2** backslash symbols (unlike the single backslash needed before 't' for 'tab' in the `read_delim` earlier).
+
+```{r clean the data, message=FALSE}
+# Separate the NAME
+library(dplyr)
+library(tidyr)
+
+cleaned_data <- original_data %>%
+  separate(NAME, c("name", "BP", "MF", "systematic_name", "number"), sep = "\\|\\|")
+```
+
+If you look at some of the `BP` entries you'll see that irritatingly there is now whitespace at the end of some, but not all, columns. We need to be consistant, so use `mutate_each` with `trimws`. We can also drop the `GID`, `YORF`, `GWEIGHT` and mysterious `number` columns:
+
+```{r}
+# Separate NAME, cleanup whitespace
+cleaned_data <- original_data %>%
+  separate(NAME, c("name", "BP", "MF", "systematic_name", "number"), sep = "\\|\\|") %>%
+  mutate_each(funs(trimws), name:systematic_name)
+
+# Separate NAME, cleanup whitespace and drop columns
+cleaned_data <- original_data %>%
+  separate(NAME, c("name", "BP", "MF", "systematic_name", "number"), sep = "\\|\\|") %>%
+  mutate_each(funs(trimws), name:systematic_name) %>%
+  select(-number, -GID, -YORF, -GWEIGHT)
+```
+
+The next problem we have is that the column headers contain values, not variables. We need to do 3 things:
+
+* Get the limiting nutrients into a column. These are glucose (G), ammonium (N), sulfate (S), phosphate (P), uracil (U), leucine (L)
+* Get the growthrate into a column. 0.05 (slow growth) through to 0.3 (rapid growth)
+* Get the gene expression into a column. Currently these values are spread across multiple columns
+
+What to do next: the clue is in the last bullet point. The opposite of `spread` is of course `gather` which is a nice function in the `tidyr` package. We'll add it as an extra line:
+
+```{r gather together}
+# Separate NAME, cleanup whitespace, drop columns and gather
+cleaned_data <- original_data %>%
+  separate(NAME, c("name", "BP", "MF", "systematic_name", "number"), sep = "\\|\\|") %>%
+  mutate_each(funs(trimws), name:systematic_name) %>%
+  select(-number, -GID, -YORF, -GWEIGHT) %>%
+  gather(sample, expression, G0.05:U0.3)
+
+cleaned_data
+```
+
+We still have one last problem. The column `sample` actually contains two variables, so we need to separate it after the first character (the letter for the nutrient) and the number. We'll use `separate` again, but indicate column 1, and to convert any numeric values into a number. We use the `stringr` library for this extra feature:
+
+```{r split up the nutrient and rate}
+# Separate NAME, cleanup whitespace, drop columns, gather and separate nutrient from rate
+library(stringr)
+
+cleaned_data <- original_data %>%
+  separate(NAME, c("name", "BP", "MF", "systematic_name", "number"), sep = "\\|\\|") %>%
+  mutate_each(funs(trimws), name:systematic_name) %>%
+  select(-number, -GID, -YORF, -GWEIGHT) %>%
+  gather(sample, expression, G0.05:U0.3) %>%
+  separate(sample, c("nutrient", "rate"), sep = 1, convert = TRUE)
+```
+
+## 4. Visualise with ggplot
+The great advantage of getting your data into `tidy` format is that it now makes it easier to subset and visualise.  Suppose you want to look at the leucine sysntesis pathway (LEU1), it is easy to filter out those values:
+
+```{r leucine}
+# Leucine synthesis
+cleaned_data %>%
+  filter(name == "LEU1")
+```
+
+The nice thing about the `tidyverse` is you can pipe the output from above straight into `ggplot`. **Note** remember to switch from `%>% ` to `+` when you go to `ggplot`:
+
+```{r ggplot of leucine}
+library(ggplot2)
+
+# ggplot of leucine
+cleaned_data %>%
+  filter(name == "LEU1") %>%
+  ggplot(aes(rate, expression, color = nutrient)) +
+  geom_line()
+```
+
+I'm not a geneticist, but even I can spot that this gene is switched on when the cells are starved of leucine. The cell has to synthsise its own leucine; as the amount of leucine available (rate) increases, the gene expression decreases.
+
+There is actually more than one gene in the leucine biosynthesis process (`BP` column) so let's look at all of them:
+
+```{r all the leucine BP}
+# All the leucine BP
+cleaned_data %>%
+  filter(BP == "leucine biosynthesis") %>%
+  ggplot(aes(rate, expression, color = nutrient)) +
+  geom_line() +
+  facet_wrap(~name)
+```
+
+LEU1, 2 and 4 seem to respond most. Perhaps it would be clearer if we fit a linear model and add to our plots:
+
+```{r leucine BP plus lm}
+# All the leucine BP plus linear model
+cleaned_data %>%
+  filter(BP == "leucine biosynthesis") %>%
+  ggplot(aes(rate, expression, color = nutrient)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  facet_wrap(~name)
+```
+
+We can do the same for sulphur metabolism, although as not all genes in this process have traditional names, we also have to facet the plot by the `systematic_name` code:
+
+```{r sulphur BP, warning=FALSE}
+# Sulphur metabolism
+cleaned_data %>%
+  filter(BP == "sulfur metabolism") %>%
+  ggplot(aes(rate, expression, color = nutrient)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  facet_wrap(~name + systematic_name, scales = "free_y")
+```
+
+**Comments** : hopefully this shows you how useful the `tidy` format is. In effect we went from the messy raw data to valuable plots in 12 lines of code, and you wouldn't have been able to produce the gene-expression plots from the raw data:
+
+```{r core code to tidy and visualise, eval=FALSE}
+# Core code
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+cleaned_data <- original_data %>%
+  separate(NAME, c("name", "BP", "MF", "systematic_name", "number"), sep = "\\|\\|") %>%
+  mutate_each(funs(trimws), name:systematic_name) %>%
+  select(-number, -GID, -YORF, -GWEIGHT) %>%
+  gather(sample, expression, G0.05:U0.3) %>%
+  separate(sample, c("nutrient", "rate"), sep = 1, convert = TRUE)
+
+cleaned_data %>%
+  filter(BP == "leucine biosynthesis") %>%
+  ggplot(aes(rate, expression, color = nutrient)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  facet_wrap(~name)
+```
+
+This might be a genetics example, but could just as easily be applied anywhere you have messy data.
+
+
+
